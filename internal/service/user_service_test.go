@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"testing"
+	"time"
 
 	"backend-path/internal/domain"
 )
@@ -79,7 +80,7 @@ func TestUserServiceRegister_Success(t *testing.T) {
 	userRepo := newFakeUserRepository()
 	hasher := &fakePasswordHasher{}
 
-	service := NewUserService(userRepo, hasher)
+	service := NewUserService(userRepo, hasher, nil)
 
 	user := &domain.User{
 		Username: "can",
@@ -128,7 +129,7 @@ func TestUserServiceRegister_EmailAlreadyExists(t *testing.T) {
 	userRepo.data[existingUser.ID] = existingUser
 	userRepo.nextID = 2
 
-	service := NewUserService(userRepo, hasher)
+	service := NewUserService(userRepo, hasher, nil)
 
 	user := &domain.User{
 		Username: "new-user",
@@ -164,7 +165,7 @@ func TestUserServiceRegister_UsernameAlreadyExists(t *testing.T) {
 	userRepo.data[existingUser.ID] = existingUser
 	userRepo.nextID = 2
 
-	service := NewUserService(userRepo, hasher)
+	service := NewUserService(userRepo, hasher, nil)
 
 	user := &domain.User{
 		Username: "can",
@@ -190,7 +191,7 @@ func TestUserServiceRegister_InvalidPassword(t *testing.T) {
 	userRepo := newFakeUserRepository()
 	hasher := &fakePasswordHasher{}
 
-	service := NewUserService(userRepo, hasher)
+	service := NewUserService(userRepo, hasher, nil)
 
 	user := &domain.User{
 		Username: "can",
@@ -226,7 +227,7 @@ func TestUserServiceAuthenticate_Success(t *testing.T) {
 	userRepo.data[existingUser.ID] = existingUser
 	userRepo.nextID = 2
 
-	service := NewUserService(userRepo, hasher)
+	service := NewUserService(userRepo, hasher, nil)
 
 	user, err := service.Authenticate(context.Background(), "can@example.com", "123456")
 	if err != nil {
@@ -250,7 +251,7 @@ func TestUserServiceAuthenticate_UserNotFound(t *testing.T) {
 	userRepo := newFakeUserRepository()
 	hasher := &fakePasswordHasher{}
 
-	service := NewUserService(userRepo, hasher)
+	service := NewUserService(userRepo, hasher, nil)
 
 	user, err := service.Authenticate(context.Background(), "missing@example.com", "123456")
 	if err == nil {
@@ -280,7 +281,7 @@ func TestUserServiceAuthenticate_WrongPassword(t *testing.T) {
 	userRepo.data[existingUser.ID] = existingUser
 	userRepo.nextID = 2
 
-	service := NewUserService(userRepo, hasher)
+	service := NewUserService(userRepo, hasher, nil)
 
 	user, err := service.Authenticate(context.Background(), "can@example.com", "wrongpass")
 	if err == nil {
@@ -300,7 +301,7 @@ func TestUserServiceAuthenticate_InvalidPassword(t *testing.T) {
 	userRepo := newFakeUserRepository()
 	hasher := &fakePasswordHasher{}
 
-	service := NewUserService(userRepo, hasher)
+	service := NewUserService(userRepo, hasher, nil)
 
 	user, err := service.Authenticate(context.Background(), "can@example.com", "")
 	if err == nil {
@@ -319,7 +320,7 @@ func TestUserServiceAuthenticate_InvalidPassword(t *testing.T) {
 func TestUserServiceAuthorizeAdmin_Success(t *testing.T) {
 	userRepo := newFakeUserRepository()
 	hasher := &fakePasswordHasher{}
-	service := NewUserService(userRepo, hasher)
+	service := NewUserService(userRepo, hasher, nil)
 
 	user := &domain.User{
 		ID:           1,
@@ -338,7 +339,7 @@ func TestUserServiceAuthorizeAdmin_Success(t *testing.T) {
 func TestUserServiceAuthorizeAdmin_Unauthorized(t *testing.T) {
 	userRepo := newFakeUserRepository()
 	hasher := &fakePasswordHasher{}
-	service := NewUserService(userRepo, hasher)
+	service := NewUserService(userRepo, hasher, nil)
 
 	user := &domain.User{
 		ID:           1,
@@ -388,7 +389,7 @@ func TestUserServiceList_Success(t *testing.T) {
 		Role:         domain.RoleUser,
 	}
 
-	service := NewUserService(userRepo, hasher)
+	service := NewUserService(userRepo, hasher, nil)
 
 	users, err := service.List(context.Background())
 	if err != nil {
@@ -414,7 +415,7 @@ func TestUserServiceUpdate_Success(t *testing.T) {
 	userRepo.data[1] = existingUser
 	userRepo.nextID = 2
 
-	service := NewUserService(userRepo, hasher)
+	service := NewUserService(userRepo, hasher, nil)
 
 	updatedUser := &domain.User{
 		ID:       1,
@@ -450,7 +451,7 @@ func TestUserServiceUpdate_UserNotFound(t *testing.T) {
 	userRepo := newFakeUserRepository()
 	hasher := &fakePasswordHasher{}
 
-	service := NewUserService(userRepo, hasher)
+	service := NewUserService(userRepo, hasher, nil)
 
 	updatedUser := &domain.User{
 		ID:       99,
@@ -481,7 +482,7 @@ func TestUserServiceDelete_Success(t *testing.T) {
 		Role:         domain.RoleUser,
 	}
 
-	service := NewUserService(userRepo, hasher)
+	service := NewUserService(userRepo, hasher, nil)
 
 	err := service.Delete(context.Background(), 1)
 	if err != nil {
@@ -497,7 +498,7 @@ func TestUserServiceDelete_UserNotFound(t *testing.T) {
 	userRepo := newFakeUserRepository()
 	hasher := &fakePasswordHasher{}
 
-	service := NewUserService(userRepo, hasher)
+	service := NewUserService(userRepo, hasher, nil)
 
 	err := service.Delete(context.Background(), 99)
 	if err == nil {
@@ -506,5 +507,124 @@ func TestUserServiceDelete_UserNotFound(t *testing.T) {
 
 	if err != domain.ErrUserNotFound {
 		t.Fatalf("expected ErrUserNotFound, got %v", err)
+	}
+}
+
+func TestUserServiceGetByID_UsesCache(t *testing.T) {
+	repo := newFakeUserRepository()
+	hasher := &fakePasswordHasher{}
+	cacheRepo := newFakeCacheRepository()
+
+	cacheRepo.data["user:1"] = &domain.User{
+		ID:           1,
+		Email:        "cached@example.com",
+		Username:     "cached",
+		PasswordHash: "hashed-password",
+		Role:         domain.RoleUser,
+		CreatedAt:    time.Now(),
+		UpdatedAt:    time.Now(),
+	}
+
+	service := NewUserService(repo, hasher, cacheRepo)
+
+	user, err := service.GetByID(context.Background(), 1)
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+
+	if user.Email != "cached@example.com" {
+		t.Fatalf("expected cached user, got %v", user.Email)
+	}
+}
+
+func TestUserServiceGetByID_WritesToCache(t *testing.T) {
+	repo := newFakeUserRepository()
+	hasher := &fakePasswordHasher{}
+	cacheRepo := newFakeCacheRepository()
+
+	repo.data[1] = &domain.User{
+		ID:       1,
+		Email:    "repo@example.com",
+		Username: "repo",
+	}
+
+	service := NewUserService(repo, hasher, cacheRepo)
+
+	_, err := service.GetByID(context.Background(), 1)
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+
+	cached, ok := cacheRepo.data["user:1"]
+	if !ok {
+		t.Fatal("expected user to be cached")
+	}
+
+	cachedUser := cached.(*domain.User)
+
+	if cachedUser.Email != "repo@example.com" {
+		t.Fatalf("expected cached email repo@example.com, got %s", cachedUser.Email)
+	}
+}
+
+func TestUserServiceUpdate_RefreshesCache(t *testing.T) {
+	repo := newFakeUserRepository()
+	hasher := &fakePasswordHasher{}
+	cacheRepo := newFakeCacheRepository()
+
+	repo.data[1] = &domain.User{
+		ID:           1,
+		Email:        "old@example.com",
+		Username:     "old",
+		PasswordHash: "hashed-password",
+		Role:         domain.RoleUser,
+		CreatedAt:    time.Now(),
+		UpdatedAt:    time.Now(),
+	}
+
+	service := NewUserService(repo, hasher, cacheRepo)
+
+	user := &domain.User{
+		ID:       1,
+		Email:    "new@example.com",
+		Username: "new",
+		Role:     domain.RoleUser,
+	}
+
+	err := service.Update(context.Background(), user)
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+
+	cached := cacheRepo.data["user:1"].(*domain.User)
+
+	if cached.Email != "new@example.com" {
+		t.Fatalf("expected updated cache, got %s", cached.Email)
+	}
+}
+
+func TestUserServiceDelete_RemovesCache(t *testing.T) {
+	repo := newFakeUserRepository()
+	hasher := &fakePasswordHasher{}
+	cacheRepo := newFakeCacheRepository()
+
+	repo.data[1] = &domain.User{
+		ID:       1,
+		Email:    "test@example.com",
+		Username: "test",
+	}
+
+	cacheRepo.data["user:1"] = repo.data[1]
+
+	service := NewUserService(repo, hasher, cacheRepo)
+
+	err := service.Delete(context.Background(), 1)
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+
+	_, exists := cacheRepo.data["user:1"]
+	if exists {
+		t.Fatal("expected cache to be deleted")
 	}
 }

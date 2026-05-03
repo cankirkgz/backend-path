@@ -6,14 +6,17 @@ import (
 	"backend-path/internal/domain"
 	"backend-path/internal/middleware"
 	"backend-path/internal/service"
+
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 type Handlers struct {
-	Auth        *AuthHandler
-	AuthRefresh *AuthRefreshHandler
-	User        *UserHandler
-	Transaction *TransactionHandler
-	Balance     *BalanceHandler
+	Auth                 *AuthHandler
+	AuthRefresh          *AuthRefreshHandler
+	User                 *UserHandler
+	Transaction          *TransactionHandler
+	Balance              *BalanceHandler
+	ScheduledTransaction *ScheduledTransactionHandler
 }
 
 type RouterDependencies struct {
@@ -33,6 +36,8 @@ func NewRouter(handlers Handlers, deps RouterDependencies) *http.ServeMux {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
 	})
+
+	mux.Handle("/metrics", promhttp.Handler())
 
 	if handlers.Auth != nil {
 		registerHandler := middleware.Chain(
@@ -126,6 +131,18 @@ func NewRouter(handlers Handlers, deps RouterDependencies) *http.ServeMux {
 			middleware.MaxBodyBytes(1024*1024),
 		)
 
+		batchCreditHandler := middleware.Chain(
+			http.HandlerFunc(handlers.Transaction.BatchCredit),
+			middleware.RequireJSON,
+			middleware.MaxBodyBytes(1024*1024),
+		)
+
+		batchDebitHandler := middleware.Chain(
+			http.HandlerFunc(handlers.Transaction.BatchDebit),
+			middleware.RequireJSON,
+			middleware.MaxBodyBytes(1024*1024),
+		)
+
 		protectedCreditHandler := middleware.Chain(
 			creditHandler,
 			middleware.Authentication(deps.TokenService),
@@ -138,6 +155,16 @@ func NewRouter(handlers Handlers, deps RouterDependencies) *http.ServeMux {
 
 		protectedTransferHandler := middleware.Chain(
 			transferHandler,
+			middleware.Authentication(deps.TokenService),
+		)
+
+		protectedBatchCreditHandler := middleware.Chain(
+			batchCreditHandler,
+			middleware.Authentication(deps.TokenService),
+		)
+
+		protectedBatchDebitHandler := middleware.Chain(
+			batchDebitHandler,
 			middleware.Authentication(deps.TokenService),
 		)
 
@@ -154,6 +181,9 @@ func NewRouter(handlers Handlers, deps RouterDependencies) *http.ServeMux {
 		mux.Handle("/api/v1/transactions/credit", protectedCreditHandler)
 		mux.Handle("/api/v1/transactions/debit", protectedDebitHandler)
 		mux.Handle("/api/v1/transactions/transfer", protectedTransferHandler)
+
+		mux.Handle("/api/v1/transactions/batch-credit", protectedBatchCreditHandler)
+		mux.Handle("/api/v1/transactions/batch-debit", protectedBatchDebitHandler)
 
 		mux.Handle("/api/v1/transactions/history", protectedTransactionHistoryHandler)
 		mux.Handle("/api/v1/transactions/", protectedTransactionGetByIDHandler)
@@ -178,6 +208,24 @@ func NewRouter(handlers Handlers, deps RouterDependencies) *http.ServeMux {
 		mux.Handle("/api/v1/balances/current", protectedBalanceCurrentHandler)
 		mux.Handle("/api/v1/balances/historical", protectedBalanceHistoricalHandler)
 		mux.Handle("/api/v1/balances/at-time", protectedBalanceAtTimeHandler)
+	}
+
+	if handlers.ScheduledTransaction != nil {
+		scheduleHandler := middleware.Chain(
+			http.HandlerFunc(handlers.ScheduledTransaction.Schedule),
+			middleware.RequireJSON,
+			middleware.MaxBodyBytes(1024*1024),
+			middleware.Authentication(deps.TokenService),
+		)
+
+		processDueHandler := middleware.Chain(
+			http.HandlerFunc(handlers.ScheduledTransaction.ProcessDue),
+			middleware.Authentication(deps.TokenService),
+			middleware.RequireRole(domain.RoleAdmin),
+		)
+
+		mux.Handle("/api/v1/scheduled-transactions", scheduleHandler)
+		mux.Handle("/api/v1/scheduled-transactions/process-due", processDueHandler)
 	}
 
 	return mux

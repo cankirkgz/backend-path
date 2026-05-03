@@ -103,3 +103,19 @@ func TestBalanceHandlerGetAtTime_Success(t *testing.T) {
 		t.Fatalf("expected status %d, got %d", http.StatusOK, rec.Code)
 	}
 }
+
+func (f *fakeBalanceService) CreditWithCurrency(ctx context.Context, userID int64, amount float64, currency domain.Currency) (*domain.Balance, error) {
+	return f.Credit(ctx, userID, amount)
+}
+
+func (f *fakeBalanceService) DebitWithCurrency(ctx context.Context, userID int64, amount float64, currency domain.Currency) (*domain.Balance, error) {
+	return f.Debit(ctx, userID, amount)
+}
+
+func (f *fakeBalanceService) GetByUserIDAndCurrency(ctx context.Context, userID int64, currency domain.Currency) (*domain.Balance, error) {
+	return f.GetByUserID(ctx, userID)
+}
+
+func (f *fakeBalanceService) GetCurrentAmountByCurrency(ctx context.Context, userID int64, currency domain.Currency) (float64, error) {
+	return f.GetCurrentAmount(ctx, userID)
+}

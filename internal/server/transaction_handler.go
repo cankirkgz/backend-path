@@ -21,14 +21,24 @@ func NewTransactionHandler(transactionService interfaces.TransactionService) *Tr
 }
 
 type creditTransactionRequest struct {
-	UserID int64   `json:"user_id"`
-	Amount float64 `json:"amount"`
+	UserID   int64           `json:"user_id"`
+	Amount   float64         `json:"amount"`
+	Currency domain.Currency `json:"currency"`
 }
 
 type transferTransactionRequest struct {
-	FromUserID int64   `json:"from_user_id"`
-	ToUserID   int64   `json:"to_user_id"`
-	Amount     float64 `json:"amount"`
+	FromUserID int64           `json:"from_user_id"`
+	ToUserID   int64           `json:"to_user_id"`
+	Amount     float64         `json:"amount"`
+	Currency   domain.Currency `json:"currency"`
+}
+
+type batchCreditTransactionRequest struct {
+	Items []domain.BatchCreditItem `json:"items"`
+}
+
+type batchDebitTransactionRequest struct {
+	Items []domain.BatchDebitItem `json:"items"`
 }
 
 type transactionResponse struct {
@@ -36,6 +46,7 @@ type transactionResponse struct {
 	FromUserID int64                    `json:"from_user_id"`
 	ToUserID   int64                    `json:"to_user_id"`
 	Amount     float64                  `json:"amount"`
+	Currency   domain.Currency          `json:"currency"`
 	Type       domain.TransactionType   `json:"type"`
 	Status     domain.TransactionStatus `json:"status"`
 	CreatedAt  string                   `json:"created_at"`
@@ -57,7 +68,13 @@ func (h *TransactionHandler) Credit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tx, err := h.transactionService.Credit(r.Context(), req.UserID, req.Amount)
+	tx, err := h.transactionService.CreditWithCurrency(
+		r.Context(),
+		req.UserID,
+		req.Amount,
+		normalizeCurrency(req.Currency),
+	)
+
 	if err != nil {
 		writeError(w, err)
 		return
@@ -82,13 +99,77 @@ func (h *TransactionHandler) Debit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tx, err := h.transactionService.Debit(r.Context(), req.UserID, req.Amount)
+	tx, err := h.transactionService.DebitWithCurrency(
+		r.Context(),
+		req.UserID,
+		req.Amount,
+		normalizeCurrency(req.Currency),
+	)
+
 	if err != nil {
 		writeError(w, err)
 		return
 	}
 
 	writeJSON(w, http.StatusCreated, toTransactionResponse(tx))
+}
+
+func (h *TransactionHandler) BatchCredit(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, errorResponse{
+			Error: "method not allowed",
+		})
+		return
+	}
+
+	var req batchCreditTransactionRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, errorResponse{
+			Error: "invalid request body",
+		})
+		return
+	}
+
+	result, err := h.transactionService.BatchCredit(r.Context(), req.Items)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, result)
+}
+
+func (h *TransactionHandler) BatchDebit(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, errorResponse{
+			Error: "method not allowed",
+		})
+		return
+	}
+
+	var req batchDebitTransactionRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, errorResponse{
+			Error: "invalid request body",
+		})
+		return
+	}
+
+	result, err := h.transactionService.BatchDebit(r.Context(), req.Items)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, result)
+}
+
+func normalizeCurrency(currency domain.Currency) domain.Currency {
+	if currency == "" {
+		return domain.CurrencyTRY
+	}
+
+	return currency
 }
 
 func toTransactionResponse(tx *domain.Transaction) transactionResponse {
@@ -102,6 +183,7 @@ func toTransactionResponse(tx *domain.Transaction) transactionResponse {
 		FromUserID: tx.FromUserID,
 		ToUserID:   tx.ToUserID,
 		Amount:     tx.Amount,
+		Currency:   tx.Currency,
 		Type:       tx.Type,
 		Status:     tx.Status,
 		CreatedAt:  createdAt,
@@ -124,12 +206,14 @@ func (h *TransactionHandler) Transfer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tx, err := h.transactionService.Transfer(
+	tx, err := h.transactionService.TransferWithCurrency(
 		r.Context(),
 		req.FromUserID,
 		req.ToUserID,
 		req.Amount,
+		normalizeCurrency(req.Currency),
 	)
+
 	if err != nil {
 		writeError(w, err)
 		return

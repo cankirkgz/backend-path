@@ -8,11 +8,15 @@ services:
       - "8080:8080"
     env_file:
       - .env.docker
+    environment:
+      OTEL_EXPORTER_OTLP_ENDPOINT: jaeger:4317
     depends_on:
       db:
         condition: service_healthy
       redis:
         condition: service_healthy
+      jaeger:
+        condition: service_started
     restart: unless-stopped
 
   db:
@@ -72,6 +76,16 @@ services:
       - grafana_data:/var/lib/grafana
     depends_on:
       - prometheus
+    restart: unless-stopped
+
+  jaeger:
+    image: jaegertracing/all-in-one:latest
+    container_name: backend-path-jaeger
+    ports:
+      - "16686:16686"
+      - "4317:4317"
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
     restart: unless-stopped
 
 volumes:

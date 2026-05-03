@@ -34,15 +34,38 @@ func Logging(logg *slog.Logger) Middleware {
 
 			duration := time.Since(start)
 			requestID := GetRequestID(r)
+			userID := GetAuthenticatedUserID(r)
+			userRole := GetAuthenticatedUserRole(r)
 
-			logg.Info("http request completed",
+			attrs := []any{
 				"method", r.Method,
 				"path", r.URL.Path,
 				"status", recorder.statusCode,
 				"duration_ms", duration.Milliseconds(),
 				"request_id", requestID,
 				"remote_addr", r.RemoteAddr,
-			)
+				"user_agent", r.UserAgent(),
+			}
+
+			if userID != 0 {
+				attrs = append(attrs, "user_id", userID)
+			}
+
+			if userRole != "" {
+				attrs = append(attrs, "user_role", userRole)
+			}
+
+			if recorder.statusCode >= 500 {
+				logg.Error("http request completed", attrs...)
+				return
+			}
+
+			if recorder.statusCode >= 400 {
+				logg.Warn("http request completed", attrs...)
+				return
+			}
+
+			logg.Info("http request completed", attrs...)
 		})
 	}
 }

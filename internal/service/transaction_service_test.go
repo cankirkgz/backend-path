@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"testing"
+	"time"
 
 	"backend-path/internal/domain"
 )
@@ -133,11 +134,51 @@ func (s *fakeBalanceService) GetCurrentAmount(ctx context.Context, userID int64)
 	return balance.GetAmount(), nil
 }
 
+type fakeEventStore struct {
+	events []*domain.Event
+}
+
+func newFakeEventStore() *fakeEventStore {
+	return &fakeEventStore{
+		events: make([]*domain.Event, 0),
+	}
+}
+
+func (s *fakeEventStore) Append(ctx context.Context, event *domain.Event) error {
+	copied := *event
+	s.events = append(s.events, &copied)
+	return nil
+}
+
+func (s *fakeEventStore) ListByEntityID(ctx context.Context, entityID string) ([]*domain.Event, error) {
+	result := make([]*domain.Event, 0)
+
+	for _, event := range s.events {
+		if event.EntityID == entityID {
+			copied := *event
+			result = append(result, &copied)
+		}
+	}
+
+	return result, nil
+}
+
+func (s *fakeEventStore) ListAll(ctx context.Context) ([]*domain.Event, error) {
+	result := make([]*domain.Event, 0, len(s.events))
+
+	for _, event := range s.events {
+		copied := *event
+		result = append(result, &copied)
+	}
+
+	return result, nil
+}
+
 func TestTransactionServiceCredit_Success(t *testing.T) {
 	txRepo := newFakeTransactionRepository()
 	balanceService := newFakeTransactionBalanceService()
 
-	service := NewTransactionService(txRepo, balanceService)
+	service := NewTransactionService(txRepo, balanceService, nil)
 
 	tx, err := service.Credit(context.Background(), 1, 100)
 	if err != nil {
@@ -191,7 +232,7 @@ func TestTransactionServiceCredit_InvalidAmount(t *testing.T) {
 	txRepo := newFakeTransactionRepository()
 	balanceService := newFakeTransactionBalanceService()
 
-	service := NewTransactionService(txRepo, balanceService)
+	service := NewTransactionService(txRepo, balanceService, nil)
 
 	tx, err := service.Credit(context.Background(), 1, 0)
 	if err == nil {
@@ -224,7 +265,7 @@ func TestTransactionServiceDebit_Success(t *testing.T) {
 		Amount: 200,
 	}
 
-	service := NewTransactionService(txRepo, balanceService)
+	service := NewTransactionService(txRepo, balanceService, nil)
 
 	tx, err := service.Debit(context.Background(), 1, 80)
 	if err != nil {
@@ -283,7 +324,7 @@ func TestTransactionServiceDebit_InsufficientBalance(t *testing.T) {
 		Amount: 50,
 	}
 
-	service := NewTransactionService(txRepo, balanceService)
+	service := NewTransactionService(txRepo, balanceService, nil)
 
 	tx, err := service.Debit(context.Background(), 1, 80)
 	if err == nil {
@@ -340,7 +381,7 @@ func TestTransactionServiceTransfer_Success(t *testing.T) {
 		Amount: 50,
 	}
 
-	service := NewTransactionService(txRepo, balanceService)
+	service := NewTransactionService(txRepo, balanceService, nil)
 
 	tx, err := service.Transfer(context.Background(), 1, 2, 80)
 	if err != nil {
@@ -417,7 +458,7 @@ func TestTransactionServiceTransfer_InsufficientBalance(t *testing.T) {
 		Amount: 20,
 	}
 
-	service := NewTransactionService(txRepo, balanceService)
+	service := NewTransactionService(txRepo, balanceService, nil)
 
 	tx, err := service.Transfer(context.Background(), 1, 2, 80)
 	if err == nil {
@@ -478,7 +519,7 @@ func TestTransactionServiceTransfer_SameSenderReceiver(t *testing.T) {
 		Amount: 100,
 	}
 
-	service := NewTransactionService(txRepo, balanceService)
+	service := NewTransactionService(txRepo, balanceService, nil)
 
 	tx, err := service.Transfer(context.Background(), 1, 1, 50)
 	if err == nil {
@@ -504,5 +545,407 @@ func TestTransactionServiceTransfer_SameSenderReceiver(t *testing.T) {
 
 	if balance.Amount != 100 {
 		t.Fatalf("expected balance amount=100, got %f", balance.Amount)
+	}
+}
+
+func TestTransactionServiceCredit_RecordsEvents(t *testing.T) {
+	txRepo := newFakeTransactionRepository()
+	balanceService := newFakeTransactionBalanceService()
+	eventStore := newFakeEventStore()
+
+	service := NewTransactionService(txRepo, balanceService, eventStore)
+
+	tx, err := service.Credit(context.Background(), 1, 100)
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+
+	if tx == nil {
+		t.Fatal("expected transaction, got nil")
+	}
+
+	events, err := eventStore.ListAll(context.Background())
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+
+	if len(events) != 2 {
+		t.Fatalf("expected 2 events, got %d", len(events))
+	}
+
+	if events[0].Type != domain.EventTransactionCreated {
+		t.Fatalf("expected first event type %s, got %s", domain.EventTransactionCreated, events[0].Type)
+	}
+
+	if events[1].Type != domain.EventBalanceUpdated {
+		t.Fatalf("expected second event type %s, got %s", domain.EventBalanceUpdated, events[1].Type)
+	}
+
+	if events[1].Data["amount"] != float64(100) {
+		t.Fatalf("expected balance event amount 100, got %v", events[1].Data["amount"])
+	}
+
+	if events[1].Data["reason"] != "credit" {
+		t.Fatalf("expected balance event reason credit, got %v", events[1].Data["reason"])
+	}
+}
+
+func TestTransactionServiceDebit_RecordsEvents(t *testing.T) {
+	txRepo := newFakeTransactionRepository()
+	balanceService := newFakeTransactionBalanceService()
+	eventStore := newFakeEventStore()
+
+	balanceService.balances[1] = &domain.Balance{
+		UserID: 1,
+		Amount: 200,
+	}
+
+	service := NewTransactionService(txRepo, balanceService, eventStore)
+
+	tx, err := service.Debit(context.Background(), 1, 80)
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+
+	if tx == nil {
+		t.Fatal("expected transaction, got nil")
+	}
+
+	events, err := eventStore.ListAll(context.Background())
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+
+	if len(events) != 2 {
+		t.Fatalf("expected 2 events, got %d", len(events))
+	}
+
+	if events[0].Type != domain.EventTransactionCreated {
+		t.Fatalf("expected first event type %s, got %s", domain.EventTransactionCreated, events[0].Type)
+	}
+
+	if events[1].Type != domain.EventBalanceUpdated {
+		t.Fatalf("expected second event type %s, got %s", domain.EventBalanceUpdated, events[1].Type)
+	}
+
+	if events[1].Data["amount"] != float64(-80) {
+		t.Fatalf("expected balance event amount -80, got %v", events[1].Data["amount"])
+	}
+
+	if events[1].Data["reason"] != "debit" {
+		t.Fatalf("expected balance event reason debit, got %v", events[1].Data["reason"])
+	}
+}
+
+func TestTransactionServiceTransfer_RecordsEvents(t *testing.T) {
+	txRepo := newFakeTransactionRepository()
+	balanceService := newFakeTransactionBalanceService()
+	eventStore := newFakeEventStore()
+
+	balanceService.balances[1] = &domain.Balance{
+		UserID: 1,
+		Amount: 200,
+	}
+
+	balanceService.balances[2] = &domain.Balance{
+		UserID: 2,
+		Amount: 50,
+	}
+
+	service := NewTransactionService(txRepo, balanceService, eventStore)
+
+	tx, err := service.Transfer(context.Background(), 1, 2, 80)
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+
+	if tx == nil {
+		t.Fatal("expected transaction, got nil")
+	}
+
+	events, err := eventStore.ListAll(context.Background())
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+
+	if len(events) != 3 {
+		t.Fatalf("expected 3 events, got %d", len(events))
+	}
+
+	if events[0].Type != domain.EventTransactionCreated {
+		t.Fatalf("expected first event type %s, got %s", domain.EventTransactionCreated, events[0].Type)
+	}
+
+	if events[1].Type != domain.EventBalanceUpdated {
+		t.Fatalf("expected second event type %s, got %s", domain.EventBalanceUpdated, events[1].Type)
+	}
+
+	if events[1].Data["amount"] != float64(-80) {
+		t.Fatalf("expected sender balance event amount -80, got %v", events[1].Data["amount"])
+	}
+
+	if events[1].Data["reason"] != "transfer_debit" {
+		t.Fatalf("expected sender event reason transfer_debit, got %v", events[1].Data["reason"])
+	}
+
+	if events[2].Type != domain.EventBalanceUpdated {
+		t.Fatalf("expected third event type %s, got %s", domain.EventBalanceUpdated, events[2].Type)
+	}
+
+	if events[2].Data["amount"] != float64(80) {
+		t.Fatalf("expected receiver balance event amount 80, got %v", events[2].Data["amount"])
+	}
+
+	if events[2].Data["reason"] != "transfer_credit" {
+		t.Fatalf("expected receiver event reason transfer_credit, got %v", events[2].Data["reason"])
+	}
+}
+
+func TestTransactionServiceDebit_RejectsAboveMaximumAmount(t *testing.T) {
+	txRepo := newFakeTransactionRepository()
+	balanceService := newFakeTransactionBalanceService()
+
+	balanceService.balances[1] = &domain.Balance{
+		UserID: 1,
+		Amount: 20000,
+	}
+
+	service := NewTransactionService(txRepo, balanceService, nil)
+
+	tx, err := service.Debit(context.Background(), 1, 10001)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+
+	if err != domain.ErrTransactionAboveMaximumAmount {
+		t.Fatalf("expected ErrTransactionAboveMaximumAmount, got %v", err)
+	}
+
+	if tx != nil {
+		t.Fatalf("expected nil transaction, got %+v", tx)
+	}
+
+	if len(txRepo.data) != 0 {
+		t.Fatalf("expected no transaction to be stored, got %d", len(txRepo.data))
+	}
+
+	if balanceService.balances[1].Amount != 20000 {
+		t.Fatalf("expected balance amount to remain 20000, got %f", balanceService.balances[1].Amount)
+	}
+}
+
+func TestTransactionServiceTransfer_RejectsDailyOutgoingLimit(t *testing.T) {
+	txRepo := newFakeTransactionRepository()
+	balanceService := newFakeTransactionBalanceService()
+
+	balanceService.balances[1] = &domain.Balance{
+		UserID: 1,
+		Amount: 100000,
+	}
+
+	balanceService.balances[2] = &domain.Balance{
+		UserID: 2,
+		Amount: 0,
+	}
+
+	service := NewTransactionService(txRepo, balanceService, nil)
+
+	existingTx := &domain.Transaction{
+		FromUserID: 1,
+		ToUserID:   2,
+		Amount:     49000,
+		Type:       domain.TransactionTypeTransfer,
+		Status:     domain.TransactionStatusCompleted,
+		CreatedAt:  time.Now(),
+	}
+
+	if err := txRepo.Create(context.Background(), existingTx); err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+
+	tx, err := service.Transfer(context.Background(), 1, 2, 2000)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+
+	if err != domain.ErrDailyTransactionLimitExceeded {
+		t.Fatalf("expected ErrDailyTransactionLimitExceeded, got %v", err)
+	}
+
+	if tx != nil {
+		t.Fatalf("expected nil transaction, got %+v", tx)
+	}
+
+	if len(txRepo.data) != 1 {
+		t.Fatalf("expected only existing transaction to remain, got %d", len(txRepo.data))
+	}
+
+	if balanceService.balances[1].Amount != 100000 {
+		t.Fatalf("expected sender balance to remain 100000, got %f", balanceService.balances[1].Amount)
+	}
+
+	if balanceService.balances[2].Amount != 0 {
+		t.Fatalf("expected receiver balance to remain 0, got %f", balanceService.balances[2].Amount)
+	}
+}
+
+func TestTransactionServiceDebit_RejectsDailyTransactionCountLimit(t *testing.T) {
+	txRepo := newFakeTransactionRepository()
+	balanceService := newFakeTransactionBalanceService()
+
+	balanceService.balances[1] = &domain.Balance{
+		UserID: 1,
+		Amount: 100000,
+	}
+
+	service := NewTransactionService(txRepo, balanceService, nil)
+
+	for i := 0; i < 20; i++ {
+		existingTx := &domain.Transaction{
+			FromUserID: 1,
+			Amount:     10,
+			Type:       domain.TransactionTypeDebit,
+			Status:     domain.TransactionStatusCompleted,
+			CreatedAt:  time.Now(),
+		}
+
+		if err := txRepo.Create(context.Background(), existingTx); err != nil {
+			t.Fatalf("expected no error, got %v", err)
+		}
+	}
+
+	tx, err := service.Debit(context.Background(), 1, 10)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+
+	if err != domain.ErrDailyTransactionCountExceeded {
+		t.Fatalf("expected ErrDailyTransactionCountExceeded, got %v", err)
+	}
+
+	if tx != nil {
+		t.Fatalf("expected nil transaction, got %+v", tx)
+	}
+
+	if len(txRepo.data) != 20 {
+		t.Fatalf("expected existing 20 transactions only, got %d", len(txRepo.data))
+	}
+
+	if balanceService.balances[1].Amount != 100000 {
+		t.Fatalf("expected balance to remain 100000, got %f", balanceService.balances[1].Amount)
+	}
+}
+
+func TestTransactionServiceBatchCredit_PartialSuccess(t *testing.T) {
+	txRepo := newFakeTransactionRepository()
+	balanceService := newFakeTransactionBalanceService()
+
+	service := NewTransactionService(txRepo, balanceService, nil)
+
+	result, err := service.BatchCredit(context.Background(), []domain.BatchCreditItem{
+		{UserID: 1, Amount: 100},
+		{UserID: 2, Amount: 200},
+		{UserID: 3, Amount: 0},
+	})
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+
+	if result.TotalCount != 3 {
+		t.Fatalf("expected total count 3, got %d", result.TotalCount)
+	}
+
+	if result.SuccessCount != 2 {
+		t.Fatalf("expected success count 2, got %d", result.SuccessCount)
+	}
+
+	if result.FailureCount != 1 {
+		t.Fatalf("expected failure count 1, got %d", result.FailureCount)
+	}
+
+	if len(result.Items) != 3 {
+		t.Fatalf("expected 3 item results, got %d", len(result.Items))
+	}
+
+	if !result.Items[0].WasSuccessful {
+		t.Fatal("expected first item to be successful")
+	}
+
+	if !result.Items[1].WasSuccessful {
+		t.Fatal("expected second item to be successful")
+	}
+
+	if result.Items[2].WasSuccessful {
+		t.Fatal("expected third item to fail")
+	}
+
+	if balanceService.balances[1].Amount != 100 {
+		t.Fatalf("expected user 1 balance 100, got %f", balanceService.balances[1].Amount)
+	}
+
+	if balanceService.balances[2].Amount != 200 {
+		t.Fatalf("expected user 2 balance 200, got %f", balanceService.balances[2].Amount)
+	}
+}
+
+func TestTransactionServiceBatchDebit_PartialSuccess(t *testing.T) {
+	txRepo := newFakeTransactionRepository()
+	balanceService := newFakeTransactionBalanceService()
+
+	balanceService.balances[1] = &domain.Balance{
+		UserID: 1,
+		Amount: 300,
+	}
+
+	balanceService.balances[2] = &domain.Balance{
+		UserID: 2,
+		Amount: 50,
+	}
+
+	service := NewTransactionService(txRepo, balanceService, nil)
+
+	result, err := service.BatchDebit(context.Background(), []domain.BatchDebitItem{
+		{UserID: 1, Amount: 100},
+		{UserID: 2, Amount: 100},
+		{UserID: 3, Amount: 50},
+	})
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+
+	if result.TotalCount != 3 {
+		t.Fatalf("expected total count 3, got %d", result.TotalCount)
+	}
+
+	if result.SuccessCount != 1 {
+		t.Fatalf("expected success count 1, got %d", result.SuccessCount)
+	}
+
+	if result.FailureCount != 2 {
+		t.Fatalf("expected failure count 2, got %d", result.FailureCount)
+	}
+
+	if len(result.Items) != 3 {
+		t.Fatalf("expected 3 item results, got %d", len(result.Items))
+	}
+
+	if !result.Items[0].WasSuccessful {
+		t.Fatal("expected first item to be successful")
+	}
+
+	if result.Items[1].WasSuccessful {
+		t.Fatal("expected second item to fail")
+	}
+
+	if result.Items[2].WasSuccessful {
+		t.Fatal("expected third item to fail")
+	}
+
+	if balanceService.balances[1].Amount != 200 {
+		t.Fatalf("expected user 1 balance 200, got %f", balanceService.balances[1].Amount)
+	}
+
+	if balanceService.balances[2].Amount != 50 {
+		t.Fatalf("expected user 2 balance to remain 50, got %f", balanceService.balances[2].Amount)
 	}
 }

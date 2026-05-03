@@ -44,15 +44,18 @@ func (h *BalanceHandler) GetCurrent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	amount, err := h.balanceService.GetCurrentAmount(r.Context(), userID)
+	currency := currencyFromQuery(r)
+
+	amount, err := h.balanceService.GetCurrentAmountByCurrency(r.Context(), userID, currency)
 	if err != nil {
 		writeError(w, err)
 		return
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"user_id": userID,
-		"amount":  amount,
+		"user_id":  userID,
+		"amount":   amount,
+		"currency": currency,
 	})
 }
 
@@ -151,6 +154,8 @@ func (h *BalanceHandler) GetAtTime(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	currency := currencyFromQuery(r)
+
 	amount := 0.0
 
 	for _, log := range logs {
@@ -165,10 +170,19 @@ func (h *BalanceHandler) GetAtTime(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"user_id": userID,
-		"at":      atTime.Format(time.RFC3339),
-		"amount":  amount,
+		"user_id":  userID,
+		"amount":   amount,
+		"currency": currency,
 	})
+}
+
+func currencyFromQuery(r *http.Request) domain.Currency {
+	currency := domain.Currency(r.URL.Query().Get("currency"))
+	if currency == "" {
+		return domain.CurrencyTRY
+	}
+
+	return currency
 }
 
 func extractNewBalance(details string) (float64, bool) {

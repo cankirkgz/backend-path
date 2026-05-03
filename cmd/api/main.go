@@ -11,6 +11,7 @@ import (
 
 	"backend-path/internal/config"
 	"backend-path/internal/logger"
+	"backend-path/internal/observability"
 	"backend-path/internal/server"
 )
 
@@ -19,6 +20,18 @@ func main() {
 
 	cfg := config.MustLoad()
 	logg := logger.New(cfg)
+
+	shutdownTracer, err := observability.InitTracer(context.Background())
+	if err != nil {
+		logg.Error("failed to initialize tracer", "err", err)
+		os.Exit(1)
+	}
+
+	defer func() {
+		if err := shutdownTracer(context.Background()); err != nil {
+			logg.Error("failed to shutdown tracer", "err", err)
+		}
+	}()
 
 	srv := server.NewHTTPServer(cfg, logg)
 

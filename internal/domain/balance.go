@@ -8,6 +8,7 @@ import (
 type Balance struct {
 	UserID        int64     `json:"user_id"`
 	Amount        float64   `json:"amount"`
+	Currency      Currency  `json:"currency"`
 	LastUpdatedAt time.Time `json:"last_updated_at"`
 
 	mu sync.RWMutex
@@ -20,6 +21,10 @@ func (b *Balance) Validate() error {
 
 	if b.Amount < 0 {
 		return ErrInvalidBalanceAmount
+	}
+
+	if !b.Currency.IsValid() {
+		return ErrInvalidCurrency
 	}
 
 	return nil

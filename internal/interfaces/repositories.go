@@ -2,6 +2,7 @@ package interfaces
 
 import (
 	"context"
+	"time"
 
 	"backend-path/internal/domain"
 )
@@ -26,10 +27,24 @@ type TransactionRepository interface {
 type BalanceRepository interface {
 	Create(ctx context.Context, balance *domain.Balance) error
 	GetByUserID(ctx context.Context, userID int64) (*domain.Balance, error)
+	GetByUserIDAndCurrency(ctx context.Context, userID int64, currency domain.Currency) (*domain.Balance, error)
 	Update(ctx context.Context, balance *domain.Balance) error
 }
 
 type AuditLogRepository interface {
 	Create(ctx context.Context, log *domain.AuditLog) error
 	ListByEntityID(ctx context.Context, entityType, entityID string) ([]*domain.AuditLog, error)
+}
+
+type EventStore interface {
+	Append(ctx context.Context, event *domain.Event) error
+	ListByEntityID(ctx context.Context, entityID string) ([]*domain.Event, error)
+	ListAll(ctx context.Context) ([]*domain.Event, error)
+}
+
+type ScheduledTransactionRepository interface {
+	Create(ctx context.Context, tx *domain.ScheduledTransaction) error
+	GetByID(ctx context.Context, id int64) (*domain.ScheduledTransaction, error)
+	ListDue(ctx context.Context, now time.Time) ([]*domain.ScheduledTransaction, error)
+	UpdateStatus(ctx context.Context, id int64, status domain.ScheduledTransactionStatus, processedAt *time.Time) error
 }

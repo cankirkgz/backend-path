@@ -21,6 +21,7 @@ func TestProcessorProcessesJobs(t *testing.T) {
 		Type:      domain.TransactionTypeCredit,
 		Status:    domain.TransactionStatusPending,
 		CreatedAt: time.Now(),
+		Currency:  domain.CurrencyTRY,
 	}
 
 	invalidTx := &domain.Transaction{
@@ -30,6 +31,7 @@ func TestProcessorProcessesJobs(t *testing.T) {
 		Type:      domain.TransactionTypeCredit,
 		Status:    domain.TransactionStatusPending,
 		CreatedAt: time.Now(),
+		Currency:  domain.CurrencyTRY,
 	}
 
 	if err := p.Submit(Job{
@@ -76,6 +78,7 @@ func TestProcessorSkipsCancelledJob(t *testing.T) {
 		Type:      domain.TransactionTypeCredit,
 		Status:    domain.TransactionStatusPending,
 		CreatedAt: time.Now(),
+		Currency:  domain.CurrencyTRY,
 	}
 
 	if err := p.Submit(Job{
@@ -118,6 +121,7 @@ func TestProcessorSubmitBatch(t *testing.T) {
 				Type:      domain.TransactionTypeCredit,
 				Status:    domain.TransactionStatusPending,
 				CreatedAt: time.Now(),
+				Currency:  domain.CurrencyTRY,
 			},
 			Ctx: context.Background(),
 		},
@@ -130,6 +134,7 @@ func TestProcessorSubmitBatch(t *testing.T) {
 				Type:      domain.TransactionTypeCredit,
 				Status:    domain.TransactionStatusPending,
 				CreatedAt: time.Now(),
+				Currency:  domain.CurrencyTRY,
 			},
 			Ctx: context.Background(),
 		},
@@ -142,6 +147,7 @@ func TestProcessorSubmitBatch(t *testing.T) {
 				Type:      domain.TransactionTypeCredit,
 				Status:    domain.TransactionStatusPending,
 				CreatedAt: time.Now(),
+				Currency:  domain.CurrencyTRY,
 			},
 			Ctx: context.Background(),
 		},
@@ -180,6 +186,7 @@ func TestProcessorSnapshot(t *testing.T) {
 		Type:      domain.TransactionTypeCredit,
 		Status:    domain.TransactionStatusPending,
 		CreatedAt: time.Now(),
+		Currency:  domain.CurrencyTRY,
 	}
 
 	if err := p.Submit(Job{

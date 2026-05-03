@@ -13,23 +13,65 @@ import (
 type BalanceService struct {
 	balanceRepo  interfaces.BalanceRepository
 	auditLogRepo interfaces.AuditLogRepository
+	cacheRepo    interfaces.CacheRepository
 }
 
 func NewBalanceService(
 	balanceRepo interfaces.BalanceRepository,
 	auditLogRepo interfaces.AuditLogRepository,
+	cacheRepo interfaces.CacheRepository,
 ) *BalanceService {
 	return &BalanceService{
 		balanceRepo:  balanceRepo,
 		auditLogRepo: auditLogRepo,
+		cacheRepo:    cacheRepo,
 	}
 }
+
 func (s *BalanceService) GetByUserID(ctx context.Context, userID int64) (*domain.Balance, error) {
+	return s.GetByUserIDAndCurrency(ctx, userID, domain.CurrencyTRY)
+}
+
+func (s *BalanceService) GetByUserIDAndCurrency(ctx context.Context, userID int64, currency domain.Currency) (*domain.Balance, error) {
 	if userID <= 0 {
 		return nil, domain.ErrInvalidBalanceUserID
 	}
 
-	balance, err := s.balanceRepo.GetByUserID(ctx, userID)
+	if !currency.IsValid() {
+		return nil, domain.ErrInvalidCurrency
+	}
+
+	cacheKey := balanceCacheKeyByCurrency(userID, currency)
+
+	if s.cacheRepo != nil {
+		var cachedBalance domain.Balance
+
+		if err := s.cacheRepo.Get(ctx, cacheKey, &cachedBalance); err == nil && cachedBalance.UserID != 0 {
+			if cachedBalance.Currency == "" {
+				cachedBalance.Currency = currency
+			}
+
+			if err := cachedBalance.Validate(); err == nil {
+				return &cachedBalance, nil
+			}
+		}
+
+		if currency == domain.CurrencyTRY {
+			legacyKey := balanceCacheKey(userID)
+
+			if err := s.cacheRepo.Get(ctx, legacyKey, &cachedBalance); err == nil && cachedBalance.UserID != 0 {
+				if cachedBalance.Currency == "" {
+					cachedBalance.Currency = domain.CurrencyTRY
+				}
+
+				if err := cachedBalance.Validate(); err == nil {
+					return &cachedBalance, nil
+				}
+			}
+		}
+	}
+
+	balance, err := s.balanceRepo.GetByUserIDAndCurrency(ctx, userID, currency)
 	if err != nil {
 		return nil, err
 	}
@@ -38,14 +80,30 @@ func (s *BalanceService) GetByUserID(ctx context.Context, userID int64) (*domain
 		return nil, domain.ErrBalanceNotFound
 	}
 
+	if balance.Currency == "" {
+		balance.Currency = currency
+	}
+
 	if err := balance.Validate(); err != nil {
 		return nil, err
+	}
+
+	if s.cacheRepo != nil {
+		_ = s.cacheRepo.Set(ctx, cacheKey, balance, balanceCacheTTL)
+
+		if currency == domain.CurrencyTRY {
+			_ = s.cacheRepo.Set(ctx, balanceCacheKey(userID), balance, balanceCacheTTL)
+		}
 	}
 
 	return balance, nil
 }
 
 func (s *BalanceService) Credit(ctx context.Context, userID int64, amount float64) (*domain.Balance, error) {
+	return s.CreditWithCurrency(ctx, userID, amount, domain.CurrencyTRY)
+}
+
+func (s *BalanceService) CreditWithCurrency(ctx context.Context, userID int64, amount float64, currency domain.Currency) (*domain.Balance, error) {
 	if userID <= 0 {
 		return nil, domain.ErrInvalidBalanceUserID
 	}
@@ -54,15 +112,20 @@ func (s *BalanceService) Credit(ctx context.Context, userID int64, amount float6
 		return nil, domain.ErrInvalidBalanceAmount
 	}
 
-	balance, err := s.balanceRepo.GetByUserID(ctx, userID)
+	if !currency.IsValid() {
+		return nil, domain.ErrInvalidCurrency
+	}
+
+	balance, err := s.balanceRepo.GetByUserIDAndCurrency(ctx, userID, currency)
 	if err != nil {
 		return nil, err
 	}
 
 	if balance == nil {
 		balance = &domain.Balance{
-			UserID: userID,
-			Amount: 0,
+			UserID:   userID,
+			Amount:   0,
+			Currency: currency,
 		}
 
 		if err := balance.Validate(); err != nil {
@@ -74,6 +137,10 @@ func (s *BalanceService) Credit(ctx context.Context, userID int64, amount float6
 		}
 	}
 
+	if balance.Currency == "" {
+		balance.Currency = currency
+	}
+
 	if err := balance.Credit(amount); err != nil {
 		return nil, err
 	}
@@ -82,12 +149,20 @@ func (s *BalanceService) Credit(ctx context.Context, userID int64, amount float6
 		return nil, err
 	}
 
+	if s.cacheRepo != nil {
+		_ = s.cacheRepo.Set(ctx, balanceCacheKeyByCurrency(userID, currency), balance, balanceCacheTTL)
+
+		if currency == domain.CurrencyTRY {
+			_ = s.cacheRepo.Set(ctx, balanceCacheKey(userID), balance, balanceCacheTTL)
+		}
+	}
+
 	if s.auditLogRepo != nil {
 		log := &domain.AuditLog{
 			EntityType: "balance",
 			EntityID:   strconv.FormatInt(userID, 10),
 			Action:     "credit",
-			Details:    fmt.Sprintf("credited %.2f, new_balance %.2f", amount, balance.Amount),
+			Details:    fmt.Sprintf("credited %.2f %s, new_balance %.2f %s", amount, currency, balance.Amount, currency),
 			CreatedAt:  time.Now(),
 		}
 		_ = s.auditLogRepo.Create(ctx, log)
@@ -97,6 +172,10 @@ func (s *BalanceService) Credit(ctx context.Context, userID int64, amount float6
 }
 
 func (s *BalanceService) Debit(ctx context.Context, userID int64, amount float64) (*domain.Balance, error) {
+	return s.DebitWithCurrency(ctx, userID, amount, domain.CurrencyTRY)
+}
+
+func (s *BalanceService) DebitWithCurrency(ctx context.Context, userID int64, amount float64, currency domain.Currency) (*domain.Balance, error) {
 	if userID <= 0 {
 		return nil, domain.ErrInvalidBalanceUserID
 	}
@@ -105,13 +184,21 @@ func (s *BalanceService) Debit(ctx context.Context, userID int64, amount float64
 		return nil, domain.ErrInvalidBalanceAmount
 	}
 
-	balance, err := s.balanceRepo.GetByUserID(ctx, userID)
+	if !currency.IsValid() {
+		return nil, domain.ErrInvalidCurrency
+	}
+
+	balance, err := s.balanceRepo.GetByUserIDAndCurrency(ctx, userID, currency)
 	if err != nil {
 		return nil, err
 	}
 
 	if balance == nil {
 		return nil, domain.ErrBalanceNotFound
+	}
+
+	if balance.Currency == "" {
+		balance.Currency = currency
 	}
 
 	if err := balance.Debit(amount); err != nil {
@@ -122,12 +209,20 @@ func (s *BalanceService) Debit(ctx context.Context, userID int64, amount float64
 		return nil, err
 	}
 
+	if s.cacheRepo != nil {
+		_ = s.cacheRepo.Set(ctx, balanceCacheKeyByCurrency(userID, currency), balance, balanceCacheTTL)
+
+		if currency == domain.CurrencyTRY {
+			_ = s.cacheRepo.Set(ctx, balanceCacheKey(userID), balance, balanceCacheTTL)
+		}
+	}
+
 	if s.auditLogRepo != nil {
 		log := &domain.AuditLog{
 			EntityType: "balance",
 			EntityID:   strconv.FormatInt(userID, 10),
 			Action:     "debit",
-			Details:    fmt.Sprintf("debited %.2f, new_balance %.2f", amount, balance.Amount),
+			Details:    fmt.Sprintf("debited %.2f %s, new_balance %.2f %s", amount, currency, balance.Amount, currency),
 			CreatedAt:  time.Now(),
 		}
 		_ = s.auditLogRepo.Create(ctx, log)
@@ -149,10 +244,24 @@ func (s *BalanceService) GetHistory(ctx context.Context, userID int64) ([]*domai
 }
 
 func (s *BalanceService) GetCurrentAmount(ctx context.Context, userID int64) (float64, error) {
-	balance, err := s.GetByUserID(ctx, userID)
+	return s.GetCurrentAmountByCurrency(ctx, userID, domain.CurrencyTRY)
+}
+
+func (s *BalanceService) GetCurrentAmountByCurrency(ctx context.Context, userID int64, currency domain.Currency) (float64, error) {
+	balance, err := s.GetByUserIDAndCurrency(ctx, userID, currency)
 	if err != nil {
 		return 0, err
 	}
 
 	return balance.GetAmount(), nil
+}
+
+const balanceCacheTTL = 5 * time.Minute
+
+func balanceCacheKey(userID int64) string {
+	return fmt.Sprintf("balance:%d", userID)
+}
+
+func balanceCacheKeyByCurrency(userID int64, currency domain.Currency) string {
+	return fmt.Sprintf("balance:%d:%s", userID, currency)
 }

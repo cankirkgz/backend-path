@@ -23,6 +23,7 @@ type Transaction struct {
 	FromUserID int64             `json:"from_user_id"`
 	ToUserID   int64             `json:"to_user_id"`
 	Amount     float64           `json:"amount"`
+	Currency   Currency          `json:"currency"`
 	Type       TransactionType   `json:"type"`
 	Status     TransactionStatus `json:"status"`
 	CreatedAt  time.Time         `json:"created_at"`
@@ -31,6 +32,9 @@ type Transaction struct {
 func (t *Transaction) Validate() error {
 	if t.Amount <= 0 {
 		return ErrInvalidTransactionAmount
+	}
+	if !t.Currency.IsValid() {
+		return ErrInvalidCurrency
 	}
 
 	if t.Type != TransactionTypeCredit &&

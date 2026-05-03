@@ -2,21 +2,29 @@ package service
 
 import (
 	"context"
+	"fmt"
 	"strings"
+	"time"
 
 	"backend-path/internal/domain"
 	"backend-path/internal/interfaces"
 )
 
 type UserService struct {
-	userRepo interfaces.UserRepository
-	hasher   PasswordHasher
+	userRepo  interfaces.UserRepository
+	hasher    PasswordHasher
+	cacheRepo interfaces.CacheRepository
 }
 
-func NewUserService(userRepo interfaces.UserRepository, hasher PasswordHasher) *UserService {
+func NewUserService(
+	userRepo interfaces.UserRepository,
+	hasher PasswordHasher,
+	cacheRepo interfaces.CacheRepository,
+) *UserService {
 	return &UserService{
-		userRepo: userRepo,
-		hasher:   hasher,
+		userRepo:  userRepo,
+		hasher:    hasher,
+		cacheRepo: cacheRepo,
 	}
 }
 
@@ -97,6 +105,18 @@ func (s *UserService) GetByID(ctx context.Context, id int64) (*domain.User, erro
 		return nil, domain.ErrUserNotFound
 	}
 
+	cacheKey := userCacheKey(id)
+
+	if s.cacheRepo != nil {
+		var cachedUser domain.User
+
+		if err := s.cacheRepo.Get(ctx, cacheKey, &cachedUser); err == nil && cachedUser.ID != 0 {
+			if err := cachedUser.Validate(); err == nil {
+				return &cachedUser, nil
+			}
+		}
+	}
+
 	user, err := s.userRepo.GetByID(ctx, id)
 	if err != nil {
 		return nil, err
@@ -104,6 +124,10 @@ func (s *UserService) GetByID(ctx context.Context, id int64) (*domain.User, erro
 
 	if user == nil {
 		return nil, domain.ErrUserNotFound
+	}
+
+	if s.cacheRepo != nil {
+		_ = s.cacheRepo.Set(ctx, cacheKey, user, userCacheTTL)
 	}
 
 	return user, nil
@@ -194,7 +218,15 @@ func (s *UserService) Update(ctx context.Context, user *domain.User) error {
 		return err
 	}
 
-	return s.userRepo.Update(ctx, user)
+	if err := s.userRepo.Update(ctx, user); err != nil {
+		return err
+	}
+
+	if s.cacheRepo != nil {
+		_ = s.cacheRepo.Set(ctx, userCacheKey(user.ID), user, userCacheTTL)
+	}
+
+	return nil
 }
 
 func (s *UserService) Delete(ctx context.Context, id int64) error {
@@ -211,5 +243,19 @@ func (s *UserService) Delete(ctx context.Context, id int64) error {
 		return domain.ErrUserNotFound
 	}
 
-	return s.userRepo.Delete(ctx, id)
+	if err := s.userRepo.Delete(ctx, id); err != nil {
+		return err
+	}
+
+	if s.cacheRepo != nil {
+		_ = s.cacheRepo.Delete(ctx, userCacheKey(id))
+	}
+
+	return nil
+}
+
+const userCacheTTL = 10 * time.Minute
+
+func userCacheKey(userID int64) string {
+	return fmt.Sprintf("user:%d", userID)
 }

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -45,6 +46,18 @@ func (f *fakeTransactionService) GetByID(ctx context.Context, id int64) (*domain
 
 func (f *fakeTransactionService) GetByUserID(ctx context.Context, userID int64) ([]*domain.Transaction, error) {
 	return nil, nil
+}
+
+func (f *fakeTransactionService) CreditWithCurrency(ctx context.Context, userID int64, amount float64, currency domain.Currency) (*domain.Transaction, error) {
+	return f.Credit(ctx, userID, amount)
+}
+
+func (f *fakeTransactionService) DebitWithCurrency(ctx context.Context, userID int64, amount float64, currency domain.Currency) (*domain.Transaction, error) {
+	return f.Debit(ctx, userID, amount)
+}
+
+func (f *fakeTransactionService) TransferWithCurrency(ctx context.Context, fromUserID, toUserID int64, amount float64, currency domain.Currency) (*domain.Transaction, error) {
+	return f.Transfer(ctx, fromUserID, toUserID, amount)
 }
 
 func TestTransactionHandlerCredit_Success(t *testing.T) {
@@ -223,5 +236,174 @@ func TestTransactionHandlerGetByUserID_Success(t *testing.T) {
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected status %d, got %d", http.StatusOK, rec.Code)
+	}
+}
+
+func (s *fakeTransactionService) BatchCredit(ctx context.Context, items []domain.BatchCreditItem) (*domain.BatchTransactionResult, error) {
+	result := &domain.BatchTransactionResult{
+		TotalCount: int64(len(items)),
+		Items:      make([]domain.BatchTransactionItemResult, 0, len(items)),
+	}
+
+	for index, item := range items {
+		if item.Amount <= 0 {
+			result.FailureCount++
+			result.Items = append(result.Items, domain.BatchTransactionItemResult{
+				Index:         int64(index),
+				Error:         domain.ErrInvalidTransactionAmount.Error(),
+				WasSuccessful: false,
+			})
+			continue
+		}
+
+		result.SuccessCount++
+		result.Items = append(result.Items, domain.BatchTransactionItemResult{
+			Index: int64(index),
+			Transaction: &domain.Transaction{
+				ID:       int64(index + 1),
+				ToUserID: item.UserID,
+				Amount:   item.Amount,
+				Type:     domain.TransactionTypeCredit,
+				Status:   domain.TransactionStatusCompleted,
+			},
+			WasSuccessful: true,
+		})
+	}
+
+	return result, nil
+}
+
+func (s *fakeTransactionService) BatchDebit(ctx context.Context, items []domain.BatchDebitItem) (*domain.BatchTransactionResult, error) {
+	result := &domain.BatchTransactionResult{
+		TotalCount: int64(len(items)),
+		Items:      make([]domain.BatchTransactionItemResult, 0, len(items)),
+	}
+
+	for index, item := range items {
+		if item.Amount <= 0 {
+			result.FailureCount++
+			result.Items = append(result.Items, domain.BatchTransactionItemResult{
+				Index:         int64(index),
+				Error:         domain.ErrInvalidTransactionAmount.Error(),
+				WasSuccessful: false,
+			})
+			continue
+		}
+
+		result.SuccessCount++
+		result.Items = append(result.Items, domain.BatchTransactionItemResult{
+			Index: int64(index),
+			Transaction: &domain.Transaction{
+				ID:         int64(index + 1),
+				FromUserID: item.UserID,
+				Amount:     item.Amount,
+				Type:       domain.TransactionTypeDebit,
+				Status:     domain.TransactionStatusCompleted,
+			},
+			WasSuccessful: true,
+		})
+	}
+
+	return result, nil
+}
+
+func TestTransactionHandlerBatchCredit_Success(t *testing.T) {
+	handler := NewTransactionHandler(&fakeTransactionService{})
+
+	body := strings.NewReader(`{
+		"items": [
+			{"user_id": 1, "amount": 100},
+			{"user_id": 2, "amount": 200},
+			{"user_id": 3, "amount": 0}
+		]
+	}`)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/transactions/batch-credit", body)
+	rec := httptest.NewRecorder()
+
+	handler.BatchCredit(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d", http.StatusOK, rec.Code)
+	}
+
+	var response domain.BatchTransactionResult
+	if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
+		t.Fatalf("expected valid response body, got %v", err)
+	}
+
+	if response.TotalCount != 3 {
+		t.Fatalf("expected total count 3, got %d", response.TotalCount)
+	}
+
+	if response.SuccessCount != 2 {
+		t.Fatalf("expected success count 2, got %d", response.SuccessCount)
+	}
+
+	if response.FailureCount != 1 {
+		t.Fatalf("expected failure count 1, got %d", response.FailureCount)
+	}
+}
+
+func TestTransactionHandlerBatchDebit_Success(t *testing.T) {
+	handler := NewTransactionHandler(&fakeTransactionService{})
+
+	body := strings.NewReader(`{
+		"items": [
+			{"user_id": 1, "amount": 100},
+			{"user_id": 2, "amount": 0}
+		]
+	}`)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/transactions/batch-debit", body)
+	rec := httptest.NewRecorder()
+
+	handler.BatchDebit(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d", http.StatusOK, rec.Code)
+	}
+
+	var response domain.BatchTransactionResult
+	if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
+		t.Fatalf("expected valid response body, got %v", err)
+	}
+
+	if response.TotalCount != 2 {
+		t.Fatalf("expected total count 2, got %d", response.TotalCount)
+	}
+
+	if response.SuccessCount != 1 {
+		t.Fatalf("expected success count 1, got %d", response.SuccessCount)
+	}
+
+	if response.FailureCount != 1 {
+		t.Fatalf("expected failure count 1, got %d", response.FailureCount)
+	}
+}
+
+func TestTransactionHandlerBatchCredit_RejectsInvalidJSON(t *testing.T) {
+	handler := NewTransactionHandler(&fakeTransactionService{})
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/transactions/batch-credit", strings.NewReader(`invalid-json`))
+	rec := httptest.NewRecorder()
+
+	handler.BatchCredit(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected status %d, got %d", http.StatusBadRequest, rec.Code)
+	}
+}
+
+func TestTransactionHandlerBatchDebit_RejectsInvalidJSON(t *testing.T) {
+	handler := NewTransactionHandler(&fakeTransactionService{})
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/transactions/batch-debit", strings.NewReader(`invalid-json`))
+	rec := httptest.NewRecorder()
+
+	handler.BatchDebit(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected status %d, got %d", http.StatusBadRequest, rec.Code)
 	}
 }
